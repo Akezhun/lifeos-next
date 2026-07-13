@@ -11,7 +11,7 @@ function isAuthorized(req: NextRequest) {
   return auth === `Bearer ${secret}` || querySecret === secret;
 }
 
-export async function GET(req: NextRequest) {
+async function runCheck(req: NextRequest) {
   if (!isAuthorized(req)) return NextResponse.json({ error: "Unauthorized" }, { status: 401 });
 
   const sb = createAdminSupabase();
@@ -47,3 +47,6 @@ export async function GET(req: NextRequest) {
 
   return NextResponse.json({ checked_at: new Date().toISOString(), candidates: candidates.length, results });
 }
+
+export async function GET(req: NextRequest) { return runCheck(req); }
+export async function POST(req: NextRequest) { return runCheck(req); }

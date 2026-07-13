@@ -48,7 +48,7 @@ export function AppShell({ children, title, subtitle }: { children: React.ReactN
             </div>
             <div>
               <div className="text-lg font-black tracking-tight">LifeOS 2.0</div>
-              <div className="text-xs text-violet-200/70">V12.1 Feature Parity</div>
+              <div className="text-xs text-violet-200/70">V12.2 Progress + Notifications</div>
             </div>
           </Link>
 

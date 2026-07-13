@@ -111,3 +111,57 @@ button:disabled { opacity:.45; cursor:not-allowed; }
 }
 ::-webkit-scrollbar { width:10px; height:10px; }
 ::-webkit-scrollbar-thumb { background:rgba(255,255,255,.16); border-radius:999px; }
+
+/* V12.2 tracker progress cards */
+.progress-track {
+  display: grid;
+  grid-template-columns: repeat(56, minmax(8px, 1fr));
+  gap: 4px;
+  align-items: stretch;
+  width: 100%;
+  overflow: hidden;
+  border-radius: 18px;
+  background: rgba(255,255,255,.035);
+  border: 1px solid rgba(255,255,255,.08);
+  padding: 8px;
+}
+.countdown-track { grid-template-columns: repeat(72, minmax(8px, 1fr)); }
+.progress-seg {
+  min-height: 32px;
+  border-radius: 9px;
+  border: 1px solid rgba(255,255,255,.075);
+  background: rgba(255,255,255,.06);
+}
+.progress-seg.done { background: linear-gradient(180deg, rgba(52,211,153,.92), rgba(16,185,129,.48)); border-color: rgba(52,211,153,.42); }
+.progress-seg.partial { background: linear-gradient(180deg, rgba(251,191,36,.80), rgba(251,191,36,.30)); border-color: rgba(251,191,36,.38); }
+.progress-seg.current { background: linear-gradient(180deg, rgba(167,139,250,.56), rgba(34,211,238,.18)); border-color: rgba(167,139,250,.38); }
+.progress-seg.urgent { background: linear-gradient(180deg, rgba(251,146,60,.78), rgba(251,146,60,.25)); border-color: rgba(251,146,60,.38); }
+.progress-seg.fail { background: linear-gradient(180deg, rgba(15,23,42,.96), rgba(244,63,94,.35)); border-color: rgba(244,63,94,.42); }
+.progress-seg.empty { background: rgba(255,255,255,.045); }
+.progress-legend { width: 13px; height: 13px; border-radius: 4px; display: inline-block; border: 1px solid rgba(255,255,255,.12); }
+.progress-legend.done { background: rgba(52,211,153,.85); }
+.progress-legend.partial { background: rgba(251,191,36,.75); }
+.progress-legend.fail { background: #111827; }
+.progress-legend.empty { background: rgba(255,255,255,.065); }
+.progress-legend.current { background: rgba(167,139,250,.55); }
+.deadline-race {
+  position: relative;
+  height: 42px;
+  border-radius: 999px;
+  border: 1px solid rgba(255,255,255,.11);
+  overflow: hidden;
+  background: linear-gradient(90deg, rgba(52,211,153,.92) 0%, rgba(251,191,36,.88) 42%, rgba(251,146,60,.86) 64%, rgba(244,63,94,.86) 83%, rgba(15,23,42,.96) 100%);
+  box-shadow: inset 0 0 0 1px rgba(255,255,255,.04), 0 16px 60px rgba(0,0,0,.20);
+}
+.deadline-race.over { filter: saturate(.92) brightness(.78); }
+.race-marker {
+  position:absolute;
+  top: -4px;
+  width: 4px;
+  height: 50px;
+  border-radius: 99px;
+  transform: translateX(-2px);
+  box-shadow: 0 0 0 4px rgba(0,0,0,.35), 0 0 26px rgba(255,255,255,.38);
+}
+.race-marker.now { background: white; }
+.race-marker.finish { background: #67e8f9; box-shadow: 0 0 0 4px rgba(0,0,0,.35), 0 0 34px rgba(103,232,249,.70); }

@@ -1,0 +1,17 @@
+name: LifeOS Notifications Worker
+
+on:
+  workflow_dispatch:
+  schedule:
+    - cron: "*/15 * * * *"
+
+jobs:
+  check-notifications:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Call LifeOS notification endpoint
+        run: |
+          set -e
+          curl -fsS -X POST "${{ secrets.LIFEOS_APP_URL }}/api/notifications/check" \
+            -H "Authorization: Bearer ${{ secrets.LIFEOS_CRON_SECRET }}" \
+            -H "Content-Type: application/json"
