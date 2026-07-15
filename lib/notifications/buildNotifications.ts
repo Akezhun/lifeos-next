@@ -153,14 +153,42 @@ async function buildDailyBriefBody(sb: any, userId: string, now: Date, timeZone:
   ].join("\n");
 }
 
+
+async function buildReviewBody(sb: any, userId: string, now: Date, timeZone: string, mode: "evening" | "weekly") {
+  const todayKey = localDateKey(now, timeZone);
+  const start = mode === "weekly" ? localCycleBounds(now, "weekly", timeZone).start : zonedDateTimeToUtc(todayKey, "00:00", timeZone);
+  const end = mode === "weekly" ? localCycleBounds(now, "weekly", timeZone).end : addDays(start, 1);
+  const [{ data: events }, { data: entries }, { data: tokens }] = await Promise.all([
+    sb.from("tracker_events").select("event_type,occurred_at").eq("user_id", userId).gte("occurred_at", start.toISOString()).lt("occurred_at", end.toISOString()),
+    sb.from("journal_entries").select("word_count,created_at").eq("user_id", userId).gte("created_at", start.toISOString()).lt("created_at", end.toISOString()),
+    sb.from("schedule_tokens").select("start_at,end_at").eq("user_id", userId).gte("start_at", start.toISOString()).lt("start_at", end.toISOString())
+  ]);
+  const done = (events ?? []).filter((e:any)=>e.event_type === "done").length;
+  const fail = (events ?? []).filter((e:any)=>e.event_type === "fail").length;
+  const partial = (events ?? []).filter((e:any)=>e.event_type === "partial_done").length;
+  const words = (entries ?? []).reduce((a:number,e:any)=>a + Number(e.word_count || 0), 0);
+  const hours = (tokens ?? []).reduce((a:number,t:any)=>a + Math.max(0, (new Date(t.end_at).getTime()-new Date(t.start_at).getTime())/3600000), 0);
+  return [
+    `LifeOS ${mode === "weekly" ? "weekly" : "evening"} review · ${todayKey}`,
+    "",
+    `Done: ${done}`,
+    `Partial: ${partial}`,
+    `Fail: ${fail}`,
+    `Journal words: ${words}`,
+    `Planned hours: ${Math.round(hours * 10) / 10}`,
+    "",
+    "Open LifeOS Analytics for progress maps and details."
+  ].join("\n");
+}
+
 export async function buildNotificationCandidates(now = new Date()): Promise<NotificationCandidate[]> {
   const sb = createAdminSupabase();
   const candidates: NotificationCandidate[] = [];
 
   const { data: channels } = await sb.from("notification_channels").select("*").eq("enabled", true);
-  const emailChannels = (channels ?? []).filter((c: any) => c.channel_type === "email" && c.target);
+  const activeChannels = (channels ?? []).filter((c: any) => ["email", "telegram"].includes(c.channel_type) && c.target);
 
-  for (const channel of emailChannels as any[]) {
+  for (const channel of activeChannels as any[]) {
     const userId = channel.user_id;
     const { data: settings } = await sb.from("settings").select("timezone").eq("user_id", userId).maybeSingle();
     const timeZone = settings?.timezone || "Asia/Almaty";
@@ -172,6 +200,8 @@ export async function buildNotificationCandidates(now = new Date()): Promise<Not
     const cycleRules = getRules(rules, "cycle_reminder");
     const countdownRules = getRules(rules, "countdown_reminder");
     const dailyRules = getRules(rules, "daily_brief");
+    const eveningRules = getRules(rules, "evening_review");
+    const weeklyRules = getRules(rules, "weekly_review");
 
     if (deadlineRules.length) {
       const windowEnd = addMinutes(now, maxLead(deadlineRules, 60));
@@ -186,7 +216,7 @@ export async function buildNotificationCandidates(now = new Date()): Promise<Not
             candidates.push({
               user_id: userId,
               dedupe_key: `deadline:${(tracker as any).id}:${lead}:${due.toISOString().slice(0,16)}`,
-              channel_type: "email",
+              channel_type: channel.channel_type,
               target: channel.target,
               title: `LifeOS deadline: ${(tracker as any).title}`,
               body: `Deadline is coming.\n\nTracker: ${(tracker as any).title}\nDue: ${due.toLocaleString("ru-RU", { timeZone })}\nLead: ${lead} minutes`,
@@ -197,7 +227,7 @@ export async function buildNotificationCandidates(now = new Date()): Promise<Not
             candidates.push({
               user_id: userId,
               dedupe_key: `deadline_missed:${(tracker as any).id}:${localDateKey(due, timeZone)}`,
-              channel_type: "email",
+              channel_type: channel.channel_type,
               target: channel.target,
               title: `LifeOS missed deadline: ${(tracker as any).title}`,
               body: `Deadline is overdue.\n\nTracker: ${(tracker as any).title}\nWas due: ${due.toLocaleString("ru-RU", { timeZone })}`,
@@ -220,7 +250,7 @@ export async function buildNotificationCandidates(now = new Date()): Promise<Not
           candidates.push({
             user_id: userId,
             dedupe_key: `schedule_token:${(token as any).id}:${lead}:${start.toISOString().slice(0,16)}`,
-            channel_type: "email",
+            channel_type: channel.channel_type,
             target: channel.target,
             title: `LifeOS schedule: ${(token as any).title}`,
             body: `Soon: ${(token as any).title}\nStarts: ${start.toLocaleString("ru-RU", { timeZone })}\nLead: ${lead} minutes`,
@@ -241,7 +271,7 @@ export async function buildNotificationCandidates(now = new Date()): Promise<Not
             candidates.push({
               user_id: userId,
               dedupe_key: `schedule_rule:${(scheduleRule as any).id}:${occ.dateKey}:${lead}`,
-              channel_type: "email",
+              channel_type: channel.channel_type,
               target: channel.target,
               title: `LifeOS schedule: ${(scheduleRule as any).title}`,
               body: `Soon: ${(scheduleRule as any).title}\nStarts: ${occ.start.toLocaleString("ru-RU", { timeZone })}\nLead: ${lead} minutes`,
@@ -265,7 +295,7 @@ export async function buildNotificationCandidates(now = new Date()): Promise<Not
           candidates.push({
             user_id: userId,
             dedupe_key: `cycle:${(tracker as any).id}:${bounds.startKey}:${lead}`,
-            channel_type: "email",
+            channel_type: channel.channel_type,
             target: channel.target,
             title: `LifeOS cycle ending: ${(tracker as any).title}`,
             body: `Cycle is ending soon.\n\nTracker: ${(tracker as any).title}\nCycle ends: ${bounds.end.toLocaleString("ru-RU", { timeZone })}`,
@@ -287,7 +317,7 @@ export async function buildNotificationCandidates(now = new Date()): Promise<Not
           candidates.push({
             user_id: userId,
             dedupe_key: `countdown:${(tracker as any).id}:${lead}:${due.toISOString().slice(0,16)}`,
-            channel_type: "email",
+            channel_type: channel.channel_type,
             target: channel.target,
             title: `LifeOS countdown: ${(tracker as any).title}`,
             body: `Countdown is ending soon.\n\nTracker: ${(tracker as any).title}\nDue: ${due.toLocaleString("ru-RU", { timeZone })}\nLead: ${lead} minutes`,
@@ -306,11 +336,51 @@ export async function buildNotificationCandidates(now = new Date()): Promise<Not
         candidates.push({
           user_id: userId,
           dedupe_key: `daily:${userId}:${localDateKey(now, timeZone)}:${timeOfDay}`,
-          channel_type: "email",
+          channel_type: channel.channel_type,
           target: channel.target,
           title: "LifeOS daily brief",
           body: await buildDailyBriefBody(sb, userId, now, timeZone),
           source_type: "daily_brief",
+          source_id: null
+        });
+      }
+    }
+
+
+    for (const rule of eveningRules) {
+      const timeOfDay = String(rule.time_of_day ?? "22:00").slice(0,5);
+      const [hh, mm] = timeOfDay.split(":").map(Number);
+      const diffMin = Math.abs(localMinutes(now, timeZone) - ((hh || 22) * 60 + (mm || 0)));
+      if (diffMin <= 10) {
+        candidates.push({
+          user_id: userId,
+          dedupe_key: `evening:${userId}:${localDateKey(now, timeZone)}:${timeOfDay}`,
+          channel_type: channel.channel_type,
+          target: channel.target,
+          title: "LifeOS evening review",
+          body: await buildReviewBody(sb, userId, now, timeZone, "evening"),
+          source_type: "evening_review",
+          source_id: null
+        });
+      }
+    }
+
+    for (const rule of weeklyRules) {
+      const timeOfDay = String(rule.time_of_day ?? "20:00").slice(0,5);
+      const [hh, mm] = timeOfDay.split(":").map(Number);
+      const diffMin = Math.abs(localMinutes(now, timeZone) - ((hh || 20) * 60 + (mm || 0)));
+      const dateKey = localDateKey(now, timeZone);
+      const wd = weekdayMon0(dateKey, timeZone);
+      const allowed = !Array.isArray(rule.weekdays) || !rule.weekdays.length || rule.weekdays.includes(wd);
+      if (allowed && diffMin <= 10) {
+        candidates.push({
+          user_id: userId,
+          dedupe_key: `weekly:${userId}:${localCycleBounds(now, "weekly", timeZone).startKey}:${timeOfDay}`,
+          channel_type: channel.channel_type,
+          target: channel.target,
+          title: "LifeOS weekly review",
+          body: await buildReviewBody(sb, userId, now, timeZone, "weekly"),
+          source_type: "weekly_review",
           source_id: null
         });
       }

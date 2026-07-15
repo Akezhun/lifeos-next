@@ -2,6 +2,9 @@ import { NextRequest, NextResponse } from "next/server";
 import { createAdminSupabase } from "@/lib/supabase/admin";
 import { buildNotificationCandidates } from "@/lib/notifications/buildNotifications";
 import { sendEmail } from "@/lib/notifications/sendEmail";
+import { sendTelegram } from "@/lib/notifications/sendTelegram";
+
+function escapeHtml(text: string) { return String(text).replace(/&/g, "&amp;").replace(/</g, "&lt;").replace(/>/g, "&gt;"); }
 
 function isAuthorized(req: NextRequest) {
   const secret = process.env.CRON_SECRET;
@@ -27,7 +30,9 @@ async function runCheck(req: NextRequest) {
 
     const sent = c.channel_type === "email"
       ? await sendEmail({ to: c.target, subject: c.title, text: c.body })
-      : { ok: false, status: 0, message: "Unsupported channel" };
+      : c.channel_type === "telegram"
+        ? await sendTelegram({ chatId: c.target, text: `<b>${escapeHtml(c.title)}</b>\n\n${escapeHtml(c.body)}` })
+        : { ok: false, status: 0, message: "Unsupported channel" };
 
     await sb.from("notification_log").insert({
       user_id: c.user_id,

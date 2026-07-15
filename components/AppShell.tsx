@@ -2,32 +2,47 @@
 
 import Link from "next/link";
 import { usePathname, useRouter } from "next/navigation";
-import { useEffect, useState } from "react";
+import { useEffect, useMemo, useState } from "react";
 import { createBrowserSupabase } from "@/lib/supabase/client";
-import { BarChart3, Bell, CalendarDays, DatabaseZap, Home, Import, LogOut, NotebookPen, Settings, ShieldCheck, Tags, Workflow } from "lucide-react";
+import { BarChart3, Bell, CalendarDays, DatabaseZap, Home, Import, LogOut, NotebookPen, Settings, ShieldCheck, Workflow, Image as ImageIcon } from "lucide-react";
 import clsx from "clsx";
 
 const nav = [
-  { href: "/", label: "Home", icon: Home },
-  { href: "/trackers", label: "Trackers", icon: ShieldCheck },
-  { href: "/journals", label: "Journals", icon: NotebookPen },
-  { href: "/schedule", label: "Schedule", icon: CalendarDays },
-  { href: "/analytics", label: "Analytics", icon: BarChart3 },
-  { href: "/notifications", label: "Notifications", icon: Bell },
-  { href: "/import", label: "Import", icon: Import },
-  { href: "/settings", label: "Settings", icon: Settings }
+  { href: "/", key: "home", icon: Home },
+  { href: "/trackers", key: "trackers", icon: ShieldCheck },
+  { href: "/journals", key: "journals", icon: NotebookPen },
+  { href: "/schedule", key: "schedule", icon: CalendarDays },
+  { href: "/analytics", key: "analytics", icon: BarChart3 },
+  { href: "/media", key: "media", icon: ImageIcon },
+  { href: "/notifications", key: "notifications", icon: Bell },
+  { href: "/import", key: "import", icon: Import },
+  { href: "/settings", key: "settings", icon: Settings }
 ];
+
+const labels: Record<string, Record<string, string>> = {
+  en: { home: "Home", trackers: "Trackers", journals: "Journals", schedule: "Schedule", analytics: "Analytics", media: "Media", notifications: "Notifications", import: "Import", settings: "Settings", signOut: "Sign out", checking: "Checking session...", db: "Supabase DB" },
+  ru: { home: "Главная", trackers: "Трекеры", journals: "Журналы", schedule: "Расписание", analytics: "Аналитика", media: "Медиа", notifications: "Уведомления", import: "Импорт", settings: "Настройки", signOut: "Выйти", checking: "Проверка сессии...", db: "Supabase DB" }
+};
 
 export function AppShell({ children, title, subtitle }: { children: React.ReactNode; title?: string; subtitle?: string }) {
   const pathname = usePathname();
   const router = useRouter();
   const [email, setEmail] = useState<string | null>(null);
   const [ready, setReady] = useState(false);
+  const [language, setLanguage] = useState<"ru" | "en">("ru");
+  const t = useMemo(() => labels[language] || labels.ru, [language]);
 
   useEffect(() => {
     const sb = createBrowserSupabase();
-    sb.auth.getUser().then(({ data }) => {
-      setEmail(data.user?.email ?? null);
+    sb.auth.getUser().then(async ({ data }) => {
+      const user = data.user;
+      setEmail(user?.email ?? null);
+      if (user?.id) {
+        const { data: settings } = await sb.from("settings").select("language,compact_mode,theme").eq("user_id", user.id).maybeSingle();
+        if (settings?.language === "en" || settings?.language === "ru") setLanguage(settings.language);
+        document.documentElement.dataset.compact = settings?.compact_mode ? "true" : "false";
+        document.documentElement.dataset.theme = settings?.theme || "dark";
+      }
       setReady(true);
     });
   }, []);
@@ -48,7 +63,7 @@ export function AppShell({ children, title, subtitle }: { children: React.ReactN
             </div>
             <div>
               <div className="text-lg font-black tracking-tight">LifeOS 2.0</div>
-              <div className="text-xs text-violet-200/70">V12.2 Progress + Notifications</div>
+              <div className="text-xs text-violet-200/70">V12.6 Core + Media</div>
             </div>
           </Link>
 
@@ -62,23 +77,23 @@ export function AppShell({ children, title, subtitle }: { children: React.ReactN
                   active ? "bg-violet-500/18 text-white ring-1 ring-violet-300/20" : "text-white/62 hover:bg-white/[0.055] hover:text-white"
                 )}>
                   <Icon size={18} />
-                  {item.label}
+                  {t[item.key]}
                 </Link>
               );
             })}
           </nav>
 
           <div className="absolute bottom-4 left-4 right-4 rounded-2xl border border-white/10 bg-black/20 p-3 text-xs text-white/58">
-            <div className="mb-1 flex items-center gap-2 text-white/78"><DatabaseZap size={15}/> Supabase DB</div>
-            <div className="truncate">{ready ? (email ?? "Not signed in") : "Checking session..."}</div>
-            {email && <button onClick={signOut} className="mt-3 flex items-center gap-2 text-rose-200 hover:text-rose-100"><LogOut size={14}/> Sign out</button>}
+            <div className="mb-1 flex items-center gap-2 text-white/78"><DatabaseZap size={15}/> {t.db}</div>
+            <div className="truncate">{ready ? (email ?? "Not signed in") : t.checking}</div>
+            {email && <button onClick={signOut} className="mt-3 flex items-center gap-2 text-rose-200 hover:text-rose-100"><LogOut size={14}/> {t.signOut}</button>}
           </div>
         </aside>
 
         <main className="min-w-0 flex-1">
           <div className="mb-4 flex flex-wrap items-center justify-between gap-3 lg:hidden">
             <Link href="/" className="font-black">LifeOS 2.0</Link>
-            <Link href="/settings" className="life-badge">Settings</Link>
+            <div className="flex gap-2"><Link href="/media" className="life-badge">Media</Link><Link href="/settings" className="life-badge">Settings</Link></div>
           </div>
           {(title || subtitle) && (
             <header className="mb-5">

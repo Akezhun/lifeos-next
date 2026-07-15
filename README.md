@@ -1,95 +1,84 @@
-# LifeOS V12.2 — Progress Maps + Real Notifications Worker
+# LifeOS V12.6 — Settings, Users, Notifications, Media
 
-LifeOS 2.0 is now Next.js + Supabase + Vercel.
+This build combines the pre-Obsidian-remaster block:
 
-V12.2 adds two important systems:
+- **V12.3 Settings Core**: language, theme, timezone, week start, start page, compact mode, module preferences.
+- **V12.4 User System Polish**: account page, logout, password reset, private preview / public signup flag, user profile.
+- **V12.5 Notifications Hardening**: email + Telegram channels, daily/evening/weekly rules, worker status, manual worker run, notification log.
+- **V12.6 Media Update**: media library, URL previews, images, YouTube embeds, Spotify/Apple/links cards, media linked to journal entries / trackers.
 
-1. **Tracker Progress Maps** in Analytics
-   - daily cycle cubes;
-   - weekly/monthly cycle blocks;
-   - deadline race palette from green to black;
-   - countdown chain where Done closes the current segment and starts the next one.
+Next major block after this: **Obsidian Sync 2.0 / remaster**.
 
-2. **Notifications Worker via GitHub Actions**
-   - Vercel cron stays disabled for Hobby compatibility;
-   - GitHub Actions calls `/api/notifications/check` every 15 minutes;
-   - LifeOS sends email through Resend;
-   - notification log prevents duplicate messages.
-
-## Local update
-
-Replace the current project files with this version, then:
+## Install / update locally
 
 ```powershell
+cd C:\Dev
+Expand-Archive "$env:USERPROFILE\Downloads\LifeOS_V12_6_Core_Media.zip" -DestinationPath C:\Dev\LifeOS_V12_6_unpack -Force
+robocopy C:\Dev\LifeOS_V12_6_unpack\LifeOS_V12_6_Core_Media C:\Dev\lifeos-next /E /XD node_modules .next .git .vercel /XF .env.local
 cd C:\Dev\lifeos-next
 npm install --legacy-peer-deps
-npm run build
 npm run dev
 ```
 
-## GitHub update
+## Required database upgrade
 
-After local build passes:
+In Supabase SQL Editor run:
 
-```powershell
-git add .
-git commit -m "LifeOS V12.2 progress maps and notifications"
-git push
+```text
+supabase/migrations/0002_v12_6_settings_users_media.sql
 ```
 
-Vercel will redeploy automatically.
+Run this **after** your existing V12.1/V12.2 schema. It adds settings columns, user profiles, media_items and deleted_items.
 
-## Vercel environment variables
+## Environment variables
 
-Required:
+Keep secrets in `.env.local` locally and Vercel Environment Variables in production. Never commit `.env.local`.
 
 ```env
 NEXT_PUBLIC_SUPABASE_URL=
 NEXT_PUBLIC_SUPABASE_ANON_KEY=
 SUPABASE_SERVICE_ROLE_KEY=
+
+ALLOW_PUBLIC_SIGNUP=false
+LIFEOS_OWNER_EMAIL=akejanduiseen@gmail.com
+
+CRON_SECRET=
 RESEND_API_KEY=
 EMAIL_FROM=LifeOS <onboarding@resend.dev>
-LIFEOS_OWNER_EMAIL=akejanduiseen@gmail.com
-CRON_SECRET=
+TELEGRAM_BOT_TOKEN=
+TELEGRAM_CHAT_ID=
+
+GITHUB_TOKEN=
+GITHUB_VAULT_REPO=Akezhun/life-tracker-vault
+GITHUB_VAULT_BRANCH=main
+GITHUB_VAULT_ROOT=LifeOS
 ```
 
-`CRON_SECRET` must be a long random string.
+## GitHub Actions worker
 
-## GitHub Actions secrets
+The existing workflow calls:
 
-In GitHub repo `Akezhun/lifeos-next`:
+```text
+/api/notifications/check
+```
 
-`Settings → Secrets and variables → Actions → New repository secret`
-
-Create:
+Repository secrets needed:
 
 ```text
 LIFEOS_APP_URL=https://your-vercel-url.vercel.app
-LIFEOS_CRON_SECRET=same value as Vercel CRON_SECRET
+LIFEOS_CRON_SECRET=same value as CRON_SECRET
 ```
 
-Then open:
+## Check after update
 
-`Actions → LifeOS Notifications Worker → Run workflow`
-
-If the run is green, scheduled email notifications are connected.
-
-## Notifications page
-
-Open `/notifications` and save rules:
-
-- Email target
-- Deadline reminders: `1440, 180, 60`
-- Schedule reminders: `15`
-- Cycle ending reminder: `180`
-- Countdown reminder: `60`
-- Daily brief time: `08:00`
-
-Then click **Send test email**.
+1. `/settings` — save language/theme/timezone, export backup, run health check.
+2. `/notifications` — save email/Telegram channels, test email/Telegram, run worker manually.
+3. `/media` — add image URL, YouTube URL, Spotify/Apple/article link.
+4. `/journals` — edit an entry and attach a media URL to it.
+5. `/analytics` — confirm existing progress maps still work.
 
 ## Notes
 
-- GitHub Vault is not the main database anymore.
-- Supabase is the source of truth.
-- GitHub Actions worker is the temporary always-on scheduler.
-- App push/PWA push can come later.
+- Supabase remains the main database.
+- GitHub Vault is not the main DB anymore. It returns later as Obsidian Markdown mirror.
+- Vercel cron is still not required. Use GitHub Actions / Render / Supabase Cron for the worker.

@@ -5,7 +5,8 @@ import { AppShell } from "@/components/AppShell";
 import { AuthGate } from "@/components/AuthGate";
 import { createBrowserSupabase } from "@/lib/supabase/client";
 import { countWords, defaultSectionsForType, fmtDateTime, loadObjectTags, parseTags, saveObjectTags, tagsToText } from "@/lib/lifeos/clientHelpers";
-import { Archive, Edit3, Maximize2, NotebookPen, Plus, Save, Trash2, X } from "lucide-react";
+import { Archive, Edit3, Maximize2, NotebookPen, Plus, Save, Trash2, X, Link2 } from "lucide-react";
+import { inferMediaType, mediaHostname } from "@/lib/media/inferMedia";
 
 const entryTypes = ["Diary", "Essay/Academic", "Project", "Learning", "Draft", "Custom"];
 
@@ -29,6 +30,8 @@ function JournalInner({ user }: { user: any }) {
   const [body, setBody] = useState("");
   const [sectionDrafts, setSectionDrafts] = useState<Record<string, string>>({});
   const [message, setMessage] = useState("");
+  const [mediaUrl, setMediaUrl] = useState("");
+  const [mediaTitle, setMediaTitle] = useState("");
 
   useEffect(() => { loadAll(); }, []);
 
@@ -122,6 +125,23 @@ function JournalInner({ user }: { user: any }) {
     if (exit) resetWriter();
   }
 
+
+  async function addMediaToEntry() {
+    if (!selected?.id || !mediaUrl.trim()) return;
+    const url = mediaUrl.trim();
+    const { error } = await sb.from("media_items").insert({
+      user_id: user.id,
+      title: mediaTitle.trim() || mediaHostname(url),
+      url,
+      media_type: inferMediaType(url),
+      object_type: "journal_entry",
+      object_id: selected.id,
+      metadata: { host: mediaHostname(url) }
+    });
+    setMessage(error?.message || "Media attached to entry");
+    if (!error) { setMediaUrl(""); setMediaTitle(""); }
+  }
+
   async function archiveEntry(e: any, on = true) {
     await sb.from("journal_entries").update({ archived_at: on ? new Date().toISOString() : null }).eq("id", e.id).eq("user_id", user.id);
     await loadAll();
@@ -157,6 +177,15 @@ function JournalInner({ user }: { user: any }) {
         <div className="md:col-span-1"><label className="life-label">Status</label><select className="life-input" value={form.status} onChange={(e) => setForm({ ...form, status: e.target.value })}><option>draft</option><option>active</option><option>final</option></select></div>
         <div className="md:col-span-12"><label className="life-label">Tags</label><input className="life-input" value={form.tags} onChange={(e) => setForm({ ...form, tags: e.target.value })} placeholder="writing, psychology, university" /></div>
       </div>
+      {selected?.id && <div className="mb-4 rounded-3xl border border-white/10 bg-black/15 p-4">
+        <div className="mb-3 flex items-center gap-2 font-black text-violet-100"><Link2 size={16}/> Attach media to this entry</div>
+        <div className="grid gap-3 md:grid-cols-[1fr,1fr,auto]">
+          <input className="life-input" placeholder="Media title / optional" value={mediaTitle} onChange={(e)=>setMediaTitle(e.target.value)} />
+          <input className="life-input" placeholder="https://image / youtube / spotify / article" value={mediaUrl} onChange={(e)=>setMediaUrl(e.target.value)} />
+          <button className="life-button secondary" onClick={addMediaToEntry}>Attach</button>
+        </div>
+      </div>}
+
       {usingSections ? <div className="grid gap-4 xl:grid-cols-2">
         {sectionNames.map((name) => <div key={name} className="rounded-3xl border border-white/10 bg-black/15 p-3">
           <label className="mb-2 block text-sm font-black text-violet-100">{name}</label>
