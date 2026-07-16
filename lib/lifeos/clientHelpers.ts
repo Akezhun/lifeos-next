@@ -58,6 +58,22 @@ export function minutesBetween(a: Date, b: Date) { return Math.round((b.getTime(
 
 export function priorityRank(p?: string | null) { return p === "high" ? 3 : p === "mid" ? 2 : 1; }
 
+export function weekdayMon0(d = new Date()) { return (d.getDay() + 6) % 7; }
+
+export function cycleIsActiveToday(tracker: any, now = new Date()) {
+  const meta = tracker?.metadata || {};
+  if (tracker?.type !== "cycle") return true;
+  if (tracker.cycle_type === "daily") {
+    const days = Array.isArray(meta.cycle_weekdays) ? meta.cycle_weekdays.map(Number) : [];
+    return days.length ? days.includes(weekdayMon0(now)) : true;
+  }
+  if (tracker.cycle_type === "monthly") {
+    const days = Array.isArray(meta.cycle_month_days) ? meta.cycle_month_days.map(Number) : [];
+    return days.length ? days.includes(now.getDate()) : true;
+  }
+  return true;
+}
+
 export function cycleStart(cycle: string | null | undefined, now = new Date()) {
   const d = new Date(now);
   if (cycle === "weekly") {
@@ -84,6 +100,7 @@ export function trackerVisualStatus(tracker: any, events: any[] = [], now = new 
     return { key: "green", label: "Planned", order: 5, urgency: ms };
   }
   if (tracker.type === "cycle") {
+    if (!cycleIsActiveToday(tracker, now)) return { key: "gray", label: "Not required today", order: 6, urgency: 999999 };
     const start = cycleStart(tracker.cycle_type, now);
     const cycleDone = events.some((e) => ["done", "partial_done"].includes(e.event_type) && new Date(e.occurred_at) >= start);
     if (cycleDone) return { key: "green", label: "Done this cycle", order: 5, urgency: 999999 };

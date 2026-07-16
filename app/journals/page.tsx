@@ -7,6 +7,9 @@ import { createBrowserSupabase } from "@/lib/supabase/client";
 import { countWords, defaultSectionsForType, fmtDateTime, loadObjectTags, parseTags, saveObjectTags, tagsToText } from "@/lib/lifeos/clientHelpers";
 import { Archive, Edit3, Maximize2, NotebookPen, Plus, Save, Trash2, X, Link2 } from "lucide-react";
 import { inferMediaType, mediaHostname } from "@/lib/media/inferMedia";
+import { InlineMediaText, stripMediaTokens } from "@/components/MediaRenderer";
+import { triggerObsidianAutoExport } from "@/lib/lifeos/autoSync";
+import { enqueueOfflineItem, getJournalDraft, removeJournalDraft, saveJournalDraft } from "@/lib/offlineQueue";
 
 const entryTypes = ["Diary", "Essay/Academic", "Project", "Learning", "Draft", "Custom"];
 
@@ -32,25 +35,52 @@ function JournalInner({ user }: { user: any }) {
   const [message, setMessage] = useState("");
   const [mediaUrl, setMediaUrl] = useState("");
   const [mediaTitle, setMediaTitle] = useState("");
+  const [mediaItems, setMediaItems] = useState<any[]>([]);
+  const [writerView, setWriterView] = useState<"edit"|"preview">("edit");
 
   useEffect(() => { loadAll(); }, []);
 
+  useEffect(() => {
+    if (mode !== "writer" || selected?.id) return;
+    const saved = getJournalDraft(user.id, "new");
+    if (!saved) return;
+    if (!body && !form.title && !Object.keys(sectionDrafts).length) {
+      setForm(saved.form || form);
+      setBody(saved.body || "");
+      setSectionDrafts(saved.sectionDrafts || {});
+      setMessage(`Offline draft restored${saved.savedAt ? ` · ${new Date(saved.savedAt).toLocaleString()}` : ""}`);
+    }
+  // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [mode, selected?.id]);
+
+  useEffect(() => {
+    if (mode !== "writer" || selected?.id) return;
+    const hasDraft = form.title || body || Object.values(sectionDrafts).some(Boolean);
+    if (!hasDraft) return;
+    const timer = window.setTimeout(() => {
+      saveJournalDraft(user.id, "new", { form, body, sectionDrafts });
+    }, 700);
+    return () => window.clearTimeout(timer);
+  }, [mode, selected?.id, form, body, sectionDrafts, user.id]);
+
   async function loadAll() {
-    const [{ data: js }, { data: es }, { data: ss }] = await Promise.all([
+    const [{ data: js }, { data: es }, { data: ss }, { data: ms }] = await Promise.all([
       sb.from("journals").select("*").eq("user_id", user.id).order("created_at", { ascending: false }),
       sb.from("journal_entries").select("*").eq("user_id", user.id).order("updated_at", { ascending: false }),
-      sb.from("journal_sections").select("*").eq("user_id", user.id).order("sort_order")
+      sb.from("journal_sections").select("*").eq("user_id", user.id).order("sort_order"),
+      sb.from("media_items").select("*").eq("user_id", user.id).eq("object_type", "journal_entry").order("created_at", { ascending: false })
     ]);
     setJournals(js || []);
     setEntries(es || []);
     const obj: Record<string, any[]> = {};
     for (const s of ss || []) obj[(s as any).entry_id] = [...(obj[(s as any).entry_id] || []), s];
     setSections(obj);
+    setMediaItems(ms || []);
     const map = await loadObjectTags(sb, user.id, "journal_entry", (es || []).map((x: any) => x.id));
     setTagMap(map);
   }
 
-  const enriched = useMemo(() => entries.map((e) => ({ ...e, _journal: journals.find((j) => j.id === e.journal_id), _sections: sections[e.id] || [], _tags: tagMap.get(e.id) || [] })), [entries, journals, sections, tagMap]);
+  const enriched = useMemo(() => entries.map((e) => ({ ...e, _journal: journals.find((j) => j.id === e.journal_id), _sections: sections[e.id] || [], _tags: tagMap.get(e.id) || [], _media: mediaItems.filter((m) => m.object_id === e.id) })), [entries, journals, sections, tagMap, mediaItems]);
   const allTags = Array.from(new Set([...tagMap.values()].flat())).sort();
   const filtered = enriched.filter((e) => {
     const archived = !!e.archived_at;
@@ -65,16 +95,16 @@ function JournalInner({ user }: { user: any }) {
     if (!journalTitle.trim()) return;
     await sb.from("journals").insert({ user_id: user.id, title: journalTitle.trim() });
     setJournalTitle("");
-    await loadAll();
+    await loadAll(); triggerObsidianAutoExport(sb, "journal_archived");
   }
 
   function resetWriter() {
-    setSelected(null); setBody(""); setSectionDrafts({}); setMode("list"); setForm({ journal_id: journals[0]?.id || "", title: "", entry_type: "Diary", status: "draft", mood: "", energy: "", tags: "" });
+    setSelected(null); setBody(""); setSectionDrafts({}); setWriterView("edit"); setMode("list"); setForm({ journal_id: journals[0]?.id || "", title: "", entry_type: "Diary", status: "draft", mood: "", energy: "", tags: "" });
   }
 
   function openNew() {
     const j = journals[0];
-    setSelected(null); setBody(""); setSectionDrafts({});
+    setSelected(null); setBody(""); setSectionDrafts({}); setWriterView("edit");
     setForm({ journal_id: j?.id || "", title: "", entry_type: "Diary", status: "draft", mood: "", energy: "", tags: "" });
     setMode("writer");
   }
@@ -94,6 +124,13 @@ function JournalInner({ user }: { user: any }) {
     if (!form.journal_id || !form.title.trim()) { setMessage("Journal and title are required"); return; }
     const usingSections = !["Diary", "Draft", "Custom"].includes(form.entry_type);
     const textForCount = usingSections ? Object.values(sectionDrafts).join("\n\n") : body;
+    if (!selected?.id && typeof navigator !== "undefined" && !navigator.onLine) {
+      enqueueOfflineItem(user.id, { kind: "journal_note", payload: { journal_id: form.journal_id, title: form.title.trim(), entry_type: form.entry_type, status: form.status, body: textForCount } });
+      removeJournalDraft(user.id, "new");
+      setMessage("Saved offline. It will sync when connection returns.");
+      if (exit) resetWriter();
+      return;
+    }
     const payload: any = {
       user_id: user.id,
       journal_id: form.journal_id,
@@ -120,8 +157,9 @@ function JournalInner({ user }: { user: any }) {
     } else {
       await sb.from("journal_sections").delete().eq("user_id", user.id).eq("entry_id", id);
     }
-    setMessage("Saved");
-    await loadAll();
+    setMessage("Saved · Obsidian sync started");
+    removeJournalDraft(user.id, "new");
+    await loadAll(); triggerObsidianAutoExport(sb, "journal_saved");
     if (exit) resetWriter();
   }
 
@@ -139,7 +177,7 @@ function JournalInner({ user }: { user: any }) {
       metadata: { host: mediaHostname(url) }
     });
     setMessage(error?.message || "Media attached to entry");
-    if (!error) { setMediaUrl(""); setMediaTitle(""); }
+    if (!error) { setMediaUrl(""); setMediaTitle(""); await loadAll(); triggerObsidianAutoExport(sb, "journal_media_attached"); }
   }
 
   async function archiveEntry(e: any, on = true) {
@@ -150,25 +188,29 @@ function JournalInner({ user }: { user: any }) {
   async function deleteEntry(e: any) {
     if (!confirm(`Delete entry “${e.title}”?`)) return;
     await sb.from("journal_entries").delete().eq("id", e.id).eq("user_id", user.id);
-    await loadAll();
+    await loadAll(); triggerObsidianAutoExport(sb, "journal_deleted");
   }
 
   if (mode === "writer") {
     const usingSections = !["Diary", "Draft", "Custom"].includes(form.entry_type);
     const sectionNames = defaultSectionsForType(form.entry_type);
-    return <div className="writer-shell life-card-strong p-4 md:p-6">
+    return <div className="writer-shell focus-wide life-card-strong p-4 md:p-6">
       <div className="mb-5 flex flex-wrap items-center justify-between gap-3">
         <div>
           <div className="text-xs uppercase tracking-[.24em] text-violet-200/60">Focus Writer</div>
           <h2 className="text-2xl font-black md:text-4xl">{selected ? "Edit entry" : "New entry"}</h2>
         </div>
         <div className="flex flex-wrap gap-2">
+          <button onClick={() => setWriterView(writerView === "edit" ? "preview" : "edit")} className="life-button secondary">{writerView === "edit" ? "Preview" : "Edit"}</button>
           <button onClick={() => saveEntry(false)} className="life-button"><Save size={16} className="inline"/> Save</button>
           <button onClick={() => saveEntry(true)} className="life-button good">Save & Exit</button>
           <button onClick={resetWriter} className="life-button secondary"><X size={16} className="inline"/> Close</button>
         </div>
       </div>
-      <div className="mb-4 grid gap-3 md:grid-cols-12">
+      {!selected?.id && <div className="offline-safe-note mb-4">Offline draft cache is active. New unsaved writing is kept locally in this browser and restored after refresh.</div>}
+      <details className="mb-4 rounded-3xl border border-white/10 bg-black/10 p-3">
+        <summary className="cursor-pointer select-none text-sm font-black text-violet-100">Метаданные записи: журнал, тип, теги, mood/energy</summary>
+        <div className="mt-4 grid gap-3 md:grid-cols-12">
         <div className="md:col-span-3"><label className="life-label">Journal</label><select className="life-input" value={form.journal_id} onChange={(e) => setForm({ ...form, journal_id: e.target.value })}>{journals.map((j) => <option key={j.id} value={j.id}>{j.title}</option>)}</select></div>
         <div className="md:col-span-4"><label className="life-label">Title</label><input className="life-input" value={form.title} onChange={(e) => setForm({ ...form, title: e.target.value })} placeholder="Entry title" /></div>
         <div className="md:col-span-2"><label className="life-label">Type</label><select className="life-input" value={form.entry_type} onChange={(e) => { const type = e.target.value; const d: Record<string,string> = {}; for (const n of defaultSectionsForType(type)) d[n] = n === "Text" ? body : (sectionDrafts[n] || ""); setForm({ ...form, entry_type: type }); setSectionDrafts(d); }}>{entryTypes.map((t) => <option key={t}>{t}</option>)}</select></div>
@@ -176,22 +218,29 @@ function JournalInner({ user }: { user: any }) {
         <div className="md:col-span-1"><label className="life-label">Energy</label><input type="number" min="1" max="5" className="life-input" value={form.energy} onChange={(e) => setForm({ ...form, energy: e.target.value })} /></div>
         <div className="md:col-span-1"><label className="life-label">Status</label><select className="life-input" value={form.status} onChange={(e) => setForm({ ...form, status: e.target.value })}><option>draft</option><option>active</option><option>final</option></select></div>
         <div className="md:col-span-12"><label className="life-label">Tags</label><input className="life-input" value={form.tags} onChange={(e) => setForm({ ...form, tags: e.target.value })} placeholder="writing, psychology, university" /></div>
-      </div>
-      {selected?.id && <div className="mb-4 rounded-3xl border border-white/10 bg-black/15 p-4">
-        <div className="mb-3 flex items-center gap-2 font-black text-violet-100"><Link2 size={16}/> Attach media to this entry</div>
-        <div className="grid gap-3 md:grid-cols-[1fr,1fr,auto]">
+        </div>
+      </details>
+      {selected?.id && <details className="mb-4 rounded-3xl border border-white/10 bg-black/15 p-4">
+        <summary className="cursor-pointer select-none font-black text-violet-100"><Link2 size={16} className="mr-2 inline"/>Прикрепить медиа к этой записи</summary>
+        <div className="mt-3 grid gap-3 md:grid-cols-[1fr,1fr,auto]">
           <input className="life-input" placeholder="Media title / optional" value={mediaTitle} onChange={(e)=>setMediaTitle(e.target.value)} />
           <input className="life-input" placeholder="https://image / youtube / spotify / article" value={mediaUrl} onChange={(e)=>setMediaUrl(e.target.value)} />
           <button className="life-button secondary" onClick={addMediaToEntry}>Attach</button>
         </div>
-      </div>}
+      </details>}
 
-      {usingSections ? <div className="grid gap-4 xl:grid-cols-2">
-        {sectionNames.map((name) => <div key={name} className="rounded-3xl border border-white/10 bg-black/15 p-3">
-          <label className="mb-2 block text-sm font-black text-violet-100">{name}</label>
-          <textarea className="life-input writer-textarea" value={sectionDrafts[name] || ""} onChange={(e) => setSectionDrafts({ ...sectionDrafts, [name]: e.target.value })} placeholder={`Write ${name.toLowerCase()}...`} />
-        </div>)}
-      </div> : <textarea className="life-input writer-textarea" value={body} onChange={(e) => setBody(e.target.value)} placeholder="Write here. This is the big text space, not a tiny form." />}
+      {writerView === "edit" ? (
+        usingSections ? <div className="grid gap-4 xl:grid-cols-2">
+          {sectionNames.map((name) => <div key={name} className="rounded-3xl border border-white/10 bg-black/15 p-3">
+            <label className="mb-2 block text-sm font-black text-violet-100">{name}</label>
+            <textarea className="life-input writer-textarea" value={sectionDrafts[name] || ""} onChange={(e) => setSectionDrafts({ ...sectionDrafts, [name]: e.target.value })} placeholder={`Write ${name.toLowerCase()}...`} />
+          </div>)}
+        </div> : <textarea className="life-input writer-textarea" value={body} onChange={(e) => setBody(e.target.value)} placeholder="Write here. Paste image/YouTube/Spotify links on their own line; Preview renders them inline." />
+      ) : (
+        <div className="life-card bg-black/15 p-4 md:p-6">
+          {usingSections ? sectionNames.map((name) => <section key={name} className="mb-6 last:mb-0"><h3 className="mb-2 text-lg font-black text-violet-100">{name}</h3><InlineMediaText text={sectionDrafts[name] || ""} compact={false} /></section>) : <InlineMediaText text={body} items={selected?._media || []} compact={false} />}
+        </div>
+      )}
       <div className="mt-3 flex flex-wrap justify-between gap-2 text-sm text-white/48"><span>{countWords(usingSections ? Object.values(sectionDrafts).join(" ") : body)} words</span><span>{message}</span></div>
     </div>;
   }
@@ -220,11 +269,12 @@ function JournalInner({ user }: { user: any }) {
     <div className="grid gap-3 lg:grid-cols-2">
       {filtered.map((e) => <article key={e.id} className="life-card p-4">
         <div className="flex items-start justify-between gap-3">
-          <div className="min-w-0"><div className="text-xs uppercase tracking-[.18em] text-white/38">{e._journal?.title || "Journal"} · {e.entry_type}</div><h3 className="mt-1 truncate text-xl font-black">{e.title}</h3><p className="mt-2 line-clamp-3 text-sm leading-6 text-white/55">{e.body || (e._sections || []).map((s: any) => s.body).join(" ").slice(0, 420) || "No text yet"}</p></div>
+          <div className="min-w-0"><div className="text-xs uppercase tracking-[.18em] text-white/38">{e._journal?.title || "Journal"} · {e.entry_type}</div><h3 className="mt-1 truncate text-xl font-black">{e.title}</h3><p className="mt-2 line-clamp-3 text-sm leading-6 text-white/55">{stripMediaTokens(e.body || (e._sections || []).map((s: any) => s.body).join(" ")).slice(0, 420) || "No text yet"}</p></div>
           <div className="flex gap-2"><button onClick={() => openEdit(e)} className="life-button secondary px-3"><Edit3 size={15}/></button><button onClick={() => deleteEntry(e)} className="life-button danger px-3"><Trash2 size={15}/></button></div>
         </div>
         <div className="mt-3 flex flex-wrap gap-2 text-xs text-white/48"><span>{e.word_count} words</span><span>•</span><span>{fmtDateTime(e.updated_at)}</span>{e.mood && <><span>•</span><span>mood {e.mood}/5</span></>}{e.energy && <><span>•</span><span>energy {e.energy}/5</span></>}</div>
         <div className="mt-3 flex flex-wrap gap-1.5">{e._tags.map((t: string) => <span key={t} className="life-chip">#{t}</span>)}</div>
+        <InlineMediaText text={e.body || (e._sections || []).map((s:any)=>s.body).join("\n")} items={e._media || []} compact />
         <button onClick={() => archiveEntry(e, tab === "active")} className="life-button secondary mt-4 text-sm">{tab === "active" ? "Archive" : "Restore"}</button>
       </article>)}
       {!filtered.length && <div className="life-card p-8 text-center text-white/50 lg:col-span-2">No journal entries yet.</div>}

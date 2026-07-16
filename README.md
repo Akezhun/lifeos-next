@@ -1,84 +1,87 @@
-# LifeOS V12.6 — Settings, Users, Notifications, Media
+# LifeOS V14.1 — True Multi-user + Owner Mode Final
 
-This build combines the pre-Obsidian-remaster block:
+This build makes LifeOS one real multi-user app instead of a personal app with multi-user as an afterthought.
 
-- **V12.3 Settings Core**: language, theme, timezone, week start, start page, compact mode, module preferences.
-- **V12.4 User System Polish**: account page, logout, password reset, private preview / public signup flag, user profile.
-- **V12.5 Notifications Hardening**: email + Telegram channels, daily/evening/weekly rules, worker status, manual worker run, notification log.
-- **V12.6 Media Update**: media library, URL previews, images, YouTube embeds, Spotify/Apple/links cards, media linked to journal entries / trackers.
+## Main model
 
-Next major block after this: **Obsidian Sync 2.0 / remaster**.
+- Supabase remains the main database.
+- Every row belongs to a user via `user_id` and RLS.
+- The app is always multi-user.
+- Akezhan is simply the first `owner` user.
+- Extra personal functions are controlled by role + feature flags.
 
-## Install / update locally
+## New in V14.1
 
-```powershell
-cd C:\Dev
-Expand-Archive "$env:USERPROFILE\Downloads\LifeOS_V12_6_Core_Media.zip" -DestinationPath C:\Dev\LifeOS_V12_6_unpack -Force
-robocopy C:\Dev\LifeOS_V12_6_unpack\LifeOS_V12_6_Core_Media C:\Dev\lifeos-next /E /XD node_modules .next .git .vercel /XF .env.local
-cd C:\Dev\lifeos-next
-npm install --legacy-peer-deps
-npm run dev
-```
+- Owner/admin role detection via `LIFEOS_OWNER_EMAIL`.
+- Signup modes:
+  - `public`
+  - `invite`
+  - `private`
+- Invite-code registration.
+- Owner/admin invite panel in Settings → Account.
+- Users list for owner/admin.
+- Per-user feature flags:
+  - Personal Tools
+  - Obsidian Sync
+  - Admin panel
+  - Experimental features
+- Per-user workspace name.
+- Better profile initialization after sign-in/sign-up.
+- V14 offline/local-first layer remains included.
 
-## Required database upgrade
+## Required Supabase migration
 
-In Supabase SQL Editor run:
+Run this SQL in Supabase SQL Editor:
 
 ```text
-supabase/migrations/0002_v12_6_settings_users_media.sql
+supabase/migrations/0006_v14_1_true_multiuser_owner_mode.sql
 ```
-
-Run this **after** your existing V12.1/V12.2 schema. It adds settings columns, user profiles, media_items and deleted_items.
 
 ## Environment variables
 
-Keep secrets in `.env.local` locally and Vercel Environment Variables in production. Never commit `.env.local`.
+Recommended final setup:
 
 ```env
-NEXT_PUBLIC_SUPABASE_URL=
-NEXT_PUBLIC_SUPABASE_ANON_KEY=
-SUPABASE_SERVICE_ROLE_KEY=
-
-ALLOW_PUBLIC_SIGNUP=false
 LIFEOS_OWNER_EMAIL=akejanduiseen@gmail.com
-
-CRON_SECRET=
-RESEND_API_KEY=
-EMAIL_FROM=LifeOS <onboarding@resend.dev>
-TELEGRAM_BOT_TOKEN=
-TELEGRAM_CHAT_ID=
-
-GITHUB_TOKEN=
-GITHUB_VAULT_REPO=Akezhun/life-tracker-vault
-GITHUB_VAULT_BRANCH=main
-GITHUB_VAULT_ROOT=LifeOS
+LIFEOS_SIGNUP_MODE=invite
+ALLOW_PUBLIC_SIGNUP=false
 ```
 
-## GitHub Actions worker
+If you want anyone to register without invites:
 
-The existing workflow calls:
-
-```text
-/api/notifications/check
+```env
+ALLOW_PUBLIC_SIGNUP=true
 ```
 
-Repository secrets needed:
+If you want only the owner to use it:
 
-```text
-LIFEOS_APP_URL=https://your-vercel-url.vercel.app
-LIFEOS_CRON_SECRET=same value as CRON_SECRET
+```env
+LIFEOS_SIGNUP_MODE=private
+ALLOW_PUBLIC_SIGNUP=false
 ```
 
-## Check after update
+## Local update
 
-1. `/settings` — save language/theme/timezone, export backup, run health check.
-2. `/notifications` — save email/Telegram channels, test email/Telegram, run worker manually.
-3. `/media` — add image URL, YouTube URL, Spotify/Apple/article link.
-4. `/journals` — edit an entry and attach a media URL to it.
-5. `/analytics` — confirm existing progress maps still work.
+```powershell
+cd C:\Dev
+Expand-Archive "$env:USERPROFILE\Downloads\LifeOS_V14_1_TrueMultiUser_Final.zip" -DestinationPath C:\Dev\LifeOS_V14_1_unpack -Force
 
-## Notes
+robocopy C:\Dev\LifeOS_V14_1_unpack\LifeOS_V14_1_TrueMultiUser_Final C:\Dev\lifeos-next /E /XD node_modules .next .git .vercel /XF .env.local
 
-- Supabase remains the main database.
-- GitHub Vault is not the main DB anymore. It returns later as Obsidian Markdown mirror.
-- Vercel cron is still not required. Use GitHub Actions / Render / Supabase Cron for the worker.
+cd C:\Dev\lifeos-next
+npm install --legacy-peer-deps
+npm run build
+npm run dev
+```
+
+## Deployment
+
+After local build:
+
+```powershell
+git add .
+git commit -m "LifeOS V14.1 true multi-user final"
+git push
+```
+
+Then redeploy on Vercel if needed.

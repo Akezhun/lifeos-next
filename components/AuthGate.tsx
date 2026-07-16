@@ -4,6 +4,7 @@ import Link from "next/link";
 import { User } from "@supabase/supabase-js";
 import { useEffect, useState } from "react";
 import { createBrowserSupabase } from "@/lib/supabase/client";
+import { SkeletonCard } from "@/components/Skeleton";
 
 export function AuthGate({ children }: { children: (user: User) => React.ReactNode }) {
   const [user, setUser] = useState<User | null>(null);
@@ -11,12 +12,29 @@ export function AuthGate({ children }: { children: (user: User) => React.ReactNo
   const [configError, setConfigError] = useState<string | null>(null);
 
   useEffect(() => {
+    let active = true;
     try {
       const sb = createBrowserSupabase();
-      sb.auth.getUser().then(({ data }) => {
-        setUser(data.user ?? null);
+      sb.auth.getSession().then(({ data }: any) => {
+        if (!active) return;
+        setUser(data.session?.user ?? null);
+        setLoading(false);
+      }).catch((e: any) => {
+        if (!active) return;
+        setConfigError(e instanceof Error ? e.message : "Supabase session error");
         setLoading(false);
       });
+
+      const { data: listener } = sb.auth.onAuthStateChange((_event: any, session: any) => {
+        if (!active) return;
+        setUser(session?.user ?? null);
+        setLoading(false);
+      });
+
+      return () => {
+        active = false;
+        listener.subscription.unsubscribe();
+      };
     } catch (e) {
       setConfigError(e instanceof Error ? e.message : "Supabase config error");
       setLoading(false);
@@ -24,7 +42,7 @@ export function AuthGate({ children }: { children: (user: User) => React.ReactNo
   }, []);
 
   if (loading) {
-    return <div className="life-card p-8 text-white/60">Loading LifeOS session...</div>;
+    return <SkeletonCard lines={4} />;
   }
 
   if (configError) {
@@ -40,9 +58,9 @@ export function AuthGate({ children }: { children: (user: User) => React.ReactNo
   if (!user) {
     return (
       <div className="life-card p-8">
-        <h2 className="text-2xl font-black">Sign in first</h2>
-        <p className="mt-2 text-white/60">LifeOS 2.0 stores data in Supabase under your user account.</p>
-        <Link href="/auth" className="life-button mt-5 inline-block">Open auth</Link>
+        <h2 className="text-2xl font-black">Войдите в LifeOS</h2>
+        <p className="mt-2 text-white/60">Сессия сохраняется на устройстве. LifeOS попросит вход только после ручного выхода или очистки данных браузера.</p>
+        <Link href="/auth" className="life-button mt-5 inline-block">Открыть вход</Link>
       </div>
     );
   }

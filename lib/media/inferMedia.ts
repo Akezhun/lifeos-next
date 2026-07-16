@@ -2,6 +2,7 @@ export type MediaType = "image" | "youtube" | "spotify" | "apple_music" | "video
 
 export function inferMediaType(url: string): MediaType {
   const u = url.toLowerCase();
+  if (u.startsWith("data:image/")) return "image";
   if (/\.(png|jpg|jpeg|gif|webp|avif|svg)(\?|#|$)/.test(u)) return "image";
   if (u.includes("youtube.com") || u.includes("youtu.be")) return "youtube";
   if (u.includes("open.spotify.com")) return "spotify";

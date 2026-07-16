@@ -66,6 +66,28 @@ function getRules(rules: Rule[], ruleType: string) {
   return rules.filter((r) => r.rule_type === ruleType && r.enabled !== false);
 }
 
+function defaultRules(ruleType: string, lead: number): Rule[] {
+  return [{ rule_type: ruleType, enabled: true, lead_minutes: lead, time_of_day: null }];
+}
+
+function notifyOn(row: any) { return !!row?.metadata?.notify_enabled; }
+function reminderMinutes(row: any, fallback: number) { return Number(row?.metadata?.reminder_minutes || fallback); }
+function cycleActiveToday(row: any, now: Date, timeZone: string) {
+  const meta = row?.metadata || {};
+  const key = localDateKey(now, timeZone);
+  const wd = weekdayMon0(key, timeZone);
+  if (row.cycle_type === "daily") {
+    const days = Array.isArray(meta.cycle_weekdays) ? meta.cycle_weekdays.map(Number) : [];
+    return days.length ? days.includes(wd) : true;
+  }
+  if (row.cycle_type === "monthly") {
+    const day = Number(key.slice(8,10));
+    const days = Array.isArray(meta.cycle_month_days) ? meta.cycle_month_days.map(Number) : [];
+    return days.length ? days.includes(day) : true;
+  }
+  return true;
+}
+
 function maxLead(rules: Rule[], fallback: number) {
   return Math.max(fallback, ...rules.map((r) => Number(r.lead_minutes || 0)).filter(Boolean));
 }
@@ -186,7 +208,18 @@ export async function buildNotificationCandidates(now = new Date()): Promise<Not
   const candidates: NotificationCandidate[] = [];
 
   const { data: channels } = await sb.from("notification_channels").select("*").eq("enabled", true);
-  const activeChannels = (channels ?? []).filter((c: any) => ["email", "telegram"].includes(c.channel_type) && c.target);
+  let activeChannels = (channels ?? []).filter((c: any) => ["email", "telegram"].includes(c.channel_type) && c.target);
+
+  if (!activeChannels.length) {
+    const { data: settingsRows } = await sb.from("settings").select("user_id,notification_prefs");
+    activeChannels = (settingsRows ?? []).flatMap((row: any) => {
+      const prefs = row.notification_prefs || {};
+      const out: any[] = [];
+      if (prefs.email !== false && process.env.LIFEOS_OWNER_EMAIL) out.push({ user_id: row.user_id, channel_type: "email", target: process.env.LIFEOS_OWNER_EMAIL });
+      if (prefs.telegram && process.env.TELEGRAM_CHAT_ID) out.push({ user_id: row.user_id, channel_type: "telegram", target: process.env.TELEGRAM_CHAT_ID });
+      return out;
+    });
+  }
 
   for (const channel of activeChannels as any[]) {
     const userId = channel.user_id;
@@ -195,23 +228,24 @@ export async function buildNotificationCandidates(now = new Date()): Promise<Not
     const { data: rawRules } = await sb.from("notification_rules").select("*").eq("user_id", userId).eq("enabled", true);
     const rules = (rawRules ?? []) as Rule[];
 
-    const deadlineRules = getRules(rules, "deadline_reminder");
-    const scheduleRules = getRules(rules, "schedule_reminder");
-    const cycleRules = getRules(rules, "cycle_reminder");
-    const countdownRules = getRules(rules, "countdown_reminder");
+    const deadlineRules = getRules(rules, "deadline_reminder").length ? getRules(rules, "deadline_reminder") : defaultRules("deadline_reminder", 60);
+    const scheduleRules = getRules(rules, "schedule_reminder").length ? getRules(rules, "schedule_reminder") : defaultRules("schedule_reminder", 15);
+    const cycleRules = getRules(rules, "cycle_reminder").length ? getRules(rules, "cycle_reminder") : defaultRules("cycle_reminder", 180);
+    const countdownRules = getRules(rules, "countdown_reminder").length ? getRules(rules, "countdown_reminder") : defaultRules("countdown_reminder", 60);
     const dailyRules = getRules(rules, "daily_brief");
     const eveningRules = getRules(rules, "evening_review");
     const weeklyRules = getRules(rules, "weekly_review");
 
     if (deadlineRules.length) {
       const windowEnd = addMinutes(now, maxLead(deadlineRules, 60));
-      const { data: trackers } = await sb.from("trackers").select("id,title,deadline_at,created_at").eq("user_id", userId).eq("type", "deadline").is("archived_at", null).lte("deadline_at", windowEnd.toISOString());
+      const { data: trackers } = await sb.from("trackers").select("id,title,deadline_at,created_at,metadata").eq("user_id", userId).eq("type", "deadline").is("archived_at", null).lte("deadline_at", windowEnd.toISOString());
       for (const tracker of trackers ?? []) {
+        if (!notifyOn(tracker)) continue;
         const due = new Date((tracker as any).deadline_at);
         const completed = await hasDoneEvent(sb, userId, (tracker as any).id);
         if (completed) continue;
         for (const rule of deadlineRules) {
-          const lead = Number(rule.lead_minutes ?? 60);
+          const lead = reminderMinutes(tracker, Number(rule.lead_minutes ?? 60));
           if (inLeadWindow(due, now, lead)) {
             candidates.push({
               user_id: userId,
@@ -241,11 +275,12 @@ export async function buildNotificationCandidates(now = new Date()): Promise<Not
 
     if (scheduleRules.length) {
       const windowEnd = addMinutes(now, maxLead(scheduleRules, 15));
-      const { data: tokens } = await sb.from("schedule_tokens").select("id,title,start_at,end_at").eq("user_id", userId).gte("start_at", now.toISOString()).lte("start_at", windowEnd.toISOString());
+      const { data: tokens } = await sb.from("schedule_tokens").select("id,title,start_at,end_at,metadata").eq("user_id", userId).gte("start_at", now.toISOString()).lte("start_at", windowEnd.toISOString());
       for (const token of tokens ?? []) {
+        if (!notifyOn(token)) continue;
         const start = new Date((token as any).start_at);
         for (const rule of scheduleRules) {
-          const lead = Number(rule.lead_minutes ?? 15);
+          const lead = reminderMinutes(token, Number(rule.lead_minutes ?? 15));
           if (!inLeadWindow(start, now, lead)) continue;
           candidates.push({
             user_id: userId,
@@ -263,10 +298,11 @@ export async function buildNotificationCandidates(now = new Date()): Promise<Not
       const { data: scheduleRulesRows } = await sb.from("schedule_rules").select("*").eq("user_id", userId);
       const { data: exceptions } = await sb.from("schedule_exceptions").select("*").eq("user_id", userId);
       for (const scheduleRule of scheduleRulesRows ?? []) {
+        if (!notifyOn(scheduleRule)) continue;
         const occs = scheduleRuleOccurrences(scheduleRule, exceptions ?? [], now, windowEnd, timeZone);
         for (const occ of occs) {
           for (const rule of scheduleRules) {
-            const lead = Number(rule.lead_minutes ?? 15);
+            const lead = reminderMinutes(scheduleRule, Number(rule.lead_minutes ?? 15));
             if (!inLeadWindow(occ.start, now, lead)) continue;
             candidates.push({
               user_id: userId,
@@ -284,13 +320,14 @@ export async function buildNotificationCandidates(now = new Date()): Promise<Not
     }
 
     if (cycleRules.length) {
-      const { data: trackers } = await sb.from("trackers").select("id,title,cycle_type").eq("user_id", userId).eq("type", "cycle").is("archived_at", null);
+      const { data: trackers } = await sb.from("trackers").select("id,title,cycle_type,metadata").eq("user_id", userId).eq("type", "cycle").is("archived_at", null);
       for (const tracker of trackers ?? []) {
+        if (!notifyOn(tracker) || !cycleActiveToday(tracker, now, timeZone)) continue;
         const bounds = localCycleBounds(now, (tracker as any).cycle_type, timeZone);
         const completed = await hasDoneEvent(sb, userId, (tracker as any).id, bounds.start, bounds.end);
         if (completed) continue;
         for (const rule of cycleRules) {
-          const lead = Number(rule.lead_minutes ?? 180);
+          const lead = reminderMinutes(tracker, Number(rule.lead_minutes ?? 180));
           if (!inLeadWindow(bounds.end, now, lead)) continue;
           candidates.push({
             user_id: userId,
@@ -307,12 +344,13 @@ export async function buildNotificationCandidates(now = new Date()): Promise<Not
     }
 
     if (countdownRules.length) {
-      const { data: trackers } = await sb.from("trackers").select("id,title,countdown_days,created_at").eq("user_id", userId).eq("type", "countdown").is("archived_at", null);
+      const { data: trackers } = await sb.from("trackers").select("id,title,countdown_days,created_at,metadata").eq("user_id", userId).eq("type", "countdown").is("archived_at", null);
       for (const tracker of trackers ?? []) {
+        if (!notifyOn(tracker)) continue;
         const base = await latestDoneOrCreated(sb, userId, tracker);
         const due = addDays(base, Number((tracker as any).countdown_days || 1));
         for (const rule of countdownRules) {
-          const lead = Number(rule.lead_minutes ?? 60);
+          const lead = reminderMinutes(tracker, Number(rule.lead_minutes ?? 60));
           if (!inLeadWindow(due, now, lead)) continue;
           candidates.push({
             user_id: userId,

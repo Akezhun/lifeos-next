@@ -5,7 +5,9 @@ import { AppShell } from "@/components/AppShell";
 import { AuthGate } from "@/components/AuthGate";
 import { createBrowserSupabase } from "@/lib/supabase/client";
 import { fmtDateTime, loadObjectTags, parseTags, priorityRank, saveObjectTags, successRate, tagsToText, trackerVisualStatus } from "@/lib/lifeos/clientHelpers";
-import { Archive, Check, Clock, Edit3, FileText, History, Plus, RotateCcw, Save, Trash2, X } from "lucide-react";
+import { triggerObsidianAutoExport } from "@/lib/lifeos/autoSync";
+import { enqueueOfflineItem } from "@/lib/offlineQueue";
+import { Archive, Bell, BellOff, Check, Edit3, FileText, History, Plus, RotateCcw, Save, Trash2, X } from "lucide-react";
 
 type FormState = {
   id?: string;
@@ -16,6 +18,10 @@ type FormState = {
   cycle_type: string;
   countdown_days: number;
   required_confirmations: number;
+  notify_enabled: boolean;
+  reminder_minutes: number;
+  cycle_weekdays: number[];
+  cycle_month_days: number[];
   tags: string;
 };
 
@@ -27,6 +33,10 @@ const emptyForm: FormState = {
   cycle_type: "daily",
   countdown_days: 1,
   required_confirmations: 1,
+  notify_enabled: false,
+  reminder_minutes: 60,
+  cycle_weekdays: [0,1,2,3,4,5,6],
+  cycle_month_days: [],
   tags: ""
 };
 
@@ -55,6 +65,7 @@ function TrackerInner({ user }: { user: any }) {
   const [panel, setPanel] = useState<"details"|"notes"|"history"|"edit">("details");
   const [noteDraft, setNoteDraft] = useState("");
   const [message, setMessage] = useState("");
+  const [showCreate, setShowCreate] = useState(false);
 
   useEffect(() => { loadAll(); }, []);
 
@@ -98,7 +109,13 @@ function TrackerInner({ user }: { user: any }) {
 
   async function createOrUpdate() {
     if (!form.title.trim()) return;
-    const metadata = { required_confirmations: Number(form.required_confirmations || 1) };
+    const metadata = {
+      required_confirmations: Number(form.required_confirmations || 1),
+      notify_enabled: !!form.notify_enabled,
+      reminder_minutes: Number(form.reminder_minutes || 60),
+      cycle_weekdays: form.cycle_weekdays || [],
+      cycle_month_days: form.cycle_month_days || []
+    };
     const payload: any = {
       user_id: user.id,
       title: form.title.trim(),
@@ -107,7 +124,8 @@ function TrackerInner({ user }: { user: any }) {
       status: "active",
       deadline_at: form.type === "deadline" && form.deadline_at ? new Date(form.deadline_at).toISOString() : null,
       cycle_type: form.type === "cycle" ? form.cycle_type : null,
-      countdown_days: form.type === "countdown" ? Number(form.countdown_days || 1) : null
+      countdown_days: form.type === "countdown" ? Number(form.countdown_days || 1) : null,
+      metadata
     };
     let id = form.id;
     if (id) {
@@ -120,12 +138,21 @@ function TrackerInner({ user }: { user: any }) {
       await sb.from("tracker_events").insert({ user_id: user.id, tracker_id: id, event_type: "create", metadata });
     }
     await saveObjectTags(sb, user.id, "tracker", id!, parseTags(form.tags));
-    setForm(emptyForm); setPanel("details"); setMessage("Saved"); await loadAll();
+    setForm(emptyForm); setPanel("details"); setMessage("Saved · Obsidian sync started"); await loadAll(); triggerObsidianAutoExport(sb, "tracker_saved");
   }
 
   async function trackerAction(t: any, event_type: string, note = "") {
-    await sb.from("tracker_events").insert({ user_id: user.id, tracker_id: t.id, event_type, note, metadata: {} });
-    await loadAll();
+    try {
+      if (typeof navigator !== "undefined" && !navigator.onLine) throw new Error("offline");
+      const { error } = await sb.from("tracker_events").insert({ user_id: user.id, tracker_id: t.id, event_type, note, metadata: {} });
+      if (error) throw error;
+      setMessage("Saved");
+      await loadAll();
+      triggerObsidianAutoExport(sb, `tracker_${event_type}`);
+    } catch {
+      enqueueOfflineItem(user.id, { kind: "tracker_event", payload: { tracker_id: t.id, event_type, note, occurred_at: new Date().toISOString() } });
+      setMessage("Saved offline. It will sync when connection returns.");
+    }
   }
 
   async function archive(t: any, on = true) {
@@ -137,7 +164,7 @@ function TrackerInner({ user }: { user: any }) {
     if (!confirm(`Delete tracker “${t.title}”?`)) return;
     await sb.from("trackers").delete().eq("id", t.id).eq("user_id", user.id);
     if (selected?.id === t.id) setSelected(null);
-    await loadAll();
+    await loadAll(); triggerObsidianAutoExport(sb, "tracker_deleted");
   }
 
   function startEdit(t: any) {
@@ -151,8 +178,18 @@ function TrackerInner({ user }: { user: any }) {
       cycle_type: t.cycle_type || "daily",
       countdown_days: t.countdown_days || 1,
       required_confirmations: Number(t.metadata?.required_confirmations || 1),
+      notify_enabled: !!t.metadata?.notify_enabled,
+      reminder_minutes: Number(t.metadata?.reminder_minutes || 60),
+      cycle_weekdays: Array.isArray(t.metadata?.cycle_weekdays) ? t.metadata.cycle_weekdays : [0,1,2,3,4,5,6],
+      cycle_month_days: Array.isArray(t.metadata?.cycle_month_days) ? t.metadata.cycle_month_days : [],
       tags: tagsToText(t._tags || [])
     });
+  }
+
+  async function toggleNotify(t: any) {
+    const meta = { ...(t.metadata || {}), notify_enabled: !t.metadata?.notify_enabled, reminder_minutes: Number(t.metadata?.reminder_minutes || 60) };
+    await sb.from("trackers").update({ metadata: meta }).eq("id", t.id).eq("user_id", user.id);
+    await loadAll();
   }
 
   async function saveNote() {
@@ -161,14 +198,16 @@ function TrackerInner({ user }: { user: any }) {
     if (existing?.id) await sb.from("tracker_notes").update({ body: noteDraft }).eq("id", existing.id);
     else await sb.from("tracker_notes").insert({ user_id: user.id, tracker_id: selected.id, body: noteDraft });
     await trackerAction(selected, "note_update");
-    await loadAll();
+    await loadAll(); triggerObsidianAutoExport(sb, "tracker_note_saved");
   }
 
   return (
-    <div className="grid gap-5 xl:grid-cols-[minmax(0,1fr)_420px]">
+    <div className="space-y-5">
+      {selected && <div className="tool-backdrop" onClick={() => setSelected(null)} />}
       <section className="space-y-5">
         <div className="life-card p-4 md:p-5">
-          <div className="mb-4 flex flex-wrap gap-2">
+          <div className="flex flex-wrap items-center justify-between gap-3">
+            <div className="flex flex-wrap gap-2">
             <button onClick={() => setTab("active")} className={`life-tab ${tab === "active" ? "active" : ""}`}>Active</button>
             <button onClick={() => setTab("archive")} className={`life-tab ${tab === "archive" ? "active" : ""}`}><Archive size={15} className="inline"/> Archive</button>
             <input value={query} onChange={(e) => setQuery(e.target.value)} placeholder="Search trackers..." className="life-input max-w-xs" />
@@ -176,8 +215,10 @@ function TrackerInner({ user }: { user: any }) {
               <option value="">All tags</option>
               {allTags.map((t) => <option key={t} value={t}>#{t}</option>)}
             </select>
+            </div>
+            <button onClick={() => { setShowCreate(!showCreate); setForm(emptyForm); }} className="life-button"><Plus size={16} className="inline"/> {showCreate ? "Скрыть форму" : "Новый трекер"}</button>
           </div>
-          <TrackerForm form={form} setForm={setForm} onSubmit={createOrUpdate} onCancel={() => setForm(emptyForm)} editing={!!form.id} />
+          {(showCreate || !!form.id) && <div className="mt-4 rounded-3xl border border-white/10 bg-black/10 p-3"><TrackerForm form={form} setForm={setForm} onSubmit={createOrUpdate} onCancel={() => { setForm(emptyForm); setShowCreate(false); }} editing={!!form.id} /></div>}
           {message && <div className="mt-3 text-sm text-white/50">{message}</div>}
         </div>
 
@@ -197,6 +238,7 @@ function TrackerInner({ user }: { user: any }) {
               </div>
               <div className="flex flex-wrap justify-end gap-2">
                 {tab === "active" ? <>
+                  <button title={t.metadata?.notify_enabled ? "Notification on" : "Notification off"} onClick={(e) => { e.stopPropagation(); toggleNotify(t); }} className={`life-button ${t.metadata?.notify_enabled ? "warn" : "secondary"} px-3 py-2`}>{t.metadata?.notify_enabled ? <Bell size={16}/> : <BellOff size={16}/>}</button>
                   <button onClick={(e) => { e.stopPropagation(); trackerAction(t, "done"); }} className="life-button good px-3 py-2"><Check size={16}/></button>
                   <button onClick={(e) => { e.stopPropagation(); trackerAction(t, "partial_done"); }} className="life-button warn px-3 py-2">½</button>
                   <button onClick={(e) => { e.stopPropagation(); trackerAction(t, "fail"); }} className="life-button danger px-3 py-2"><X size={16}/></button>
@@ -215,14 +257,14 @@ function TrackerInner({ user }: { user: any }) {
         </div>
       </section>
 
-      <aside className="life-card-strong sticky top-5 h-fit p-4 md:p-5">
+      <aside className={`tool-drawer ${selected ? "open" : ""}`}>
         {!selected ? <div className="text-white/55">Select a tracker to open details, notes, edit and history.</div> : <>
           <div className="mb-4 flex items-start justify-between gap-3">
             <div>
               <div className="text-xs uppercase tracking-[.24em] text-violet-200/60">selected tracker</div>
               <h2 className="mt-1 text-2xl font-black">{selected.title}</h2>
             </div>
-            <button onClick={() => remove(selected)} className="life-button danger px-3"><Trash2 size={16}/></button>
+            <div className="flex gap-2"><button onClick={() => setSelected(null)} className="life-button secondary px-3">×</button><button onClick={() => remove(selected)} className="life-button danger px-3"><Trash2 size={16}/></button></div>
           </div>
           <div className="mb-4 flex flex-wrap gap-2">
             <button className={`life-tab ${panel === "details" ? "active" : ""}`} onClick={() => setPanel("details")}>Details</button>
@@ -235,6 +277,8 @@ function TrackerInner({ user }: { user: any }) {
             <div className="rounded-2xl bg-white/[.035] p-3"><b>Type:</b> {selected.type}</div>
             <div className="rounded-2xl bg-white/[.035] p-3"><b>Priority:</b> {selected.priority}</div>
             <div className="rounded-2xl bg-white/[.035] p-3"><b>Deadline:</b> {fmtDateTime(selected.deadline_at)}</div>
+            <div className="rounded-2xl bg-white/[.035] p-3"><b>Notify:</b> {selected.metadata?.notify_enabled ? `on · ${selected.metadata?.reminder_minutes || 60} min before` : "off"}</div>
+            {selected.type === "cycle" && <div className="rounded-2xl bg-white/[.035] p-3"><b>Active days:</b> {selected.cycle_type === "daily" ? ((selected.metadata?.cycle_weekdays || []).map((d:number)=>["Mon","Tue","Wed","Thu","Fri","Sat","Sun"][d]).join(", ") || "every day") : selected.cycle_type === "monthly" ? ((selected.metadata?.cycle_month_days || []).join(", ") || "every day of month") : "weekly cycle"}</div>}
           </div>}
           {panel === "notes" && <div className="space-y-3">
             <textarea value={noteDraft} onChange={(e) => setNoteDraft(e.target.value)} className="life-input min-h-[360px]" placeholder="Private tracker notes..." />
@@ -255,6 +299,15 @@ function TrackerInner({ user }: { user: any }) {
 }
 
 function TrackerForm({ form, setForm, onSubmit, onCancel, editing }: { form: FormState; setForm: (v: FormState) => void; onSubmit: () => void; onCancel: () => void; editing?: boolean }) {
+  const weekdays = ["Mon", "Tue", "Wed", "Thu", "Fri", "Sat", "Sun"];
+  function toggleWeekday(i: number) {
+    const days = form.cycle_weekdays.includes(i) ? form.cycle_weekdays.filter((x) => x !== i) : [...form.cycle_weekdays, i].sort((a,b)=>a-b);
+    setForm({ ...form, cycle_weekdays: days });
+  }
+  function toggleMonthDay(i: number) {
+    const days = form.cycle_month_days.includes(i) ? form.cycle_month_days.filter((x) => x !== i) : [...form.cycle_month_days, i].sort((a,b)=>a-b);
+    setForm({ ...form, cycle_month_days: days });
+  }
   return <div className="grid gap-3 md:grid-cols-12">
     <div className="md:col-span-4"><label className="life-label">Title</label><input className="life-input" value={form.title} onChange={(e) => setForm({ ...form, title: e.target.value })} placeholder="e.g. Read psychology book" /></div>
     <div className="md:col-span-2"><label className="life-label">Type</label><select className="life-input" value={form.type} onChange={(e) => setForm({ ...form, type: e.target.value })}><option value="deadline">deadline</option><option value="cycle">cycle</option><option value="countdown">countdown</option><option value="gray">gray</option></select></div>
@@ -264,6 +317,10 @@ function TrackerForm({ form, setForm, onSubmit, onCancel, editing }: { form: For
     {form.type === "countdown" && <div className="md:col-span-4"><label className="life-label">Countdown days</label><input type="number" min={1} className="life-input" value={form.countdown_days} onChange={(e) => setForm({ ...form, countdown_days: Number(e.target.value) })} /></div>}
     <div className="md:col-span-6"><label className="life-label">Tags</label><input className="life-input" value={form.tags} onChange={(e) => setForm({ ...form, tags: e.target.value })} placeholder="study, psychology" /></div>
     <div className="md:col-span-3"><label className="life-label">Confirmations</label><input type="number" min={1} className="life-input" value={form.required_confirmations} onChange={(e) => setForm({ ...form, required_confirmations: Number(e.target.value) })} /></div>
-    <div className="flex items-end gap-2 md:col-span-3"><button onClick={onSubmit} className="life-button w-full"><Plus size={16} className="inline"/> {editing ? "Save" : "Create"}</button>{editing && <button onClick={onCancel} className="life-button secondary">Cancel</button>}</div>
+    <div className="md:col-span-3"><label className="life-label">Reminder minutes</label><input type="number" min={1} className="life-input" value={form.reminder_minutes} onChange={(e) => setForm({ ...form, reminder_minutes: Number(e.target.value) })} /></div>
+    <label className="md:col-span-12 flex items-center gap-3 rounded-2xl border border-white/10 bg-white/[0.035] p-3 text-sm text-white/70"><input type="checkbox" checked={form.notify_enabled} onChange={(e)=>setForm({ ...form, notify_enabled: e.target.checked })}/> Notify me near deadline / cycle end / countdown end</label>
+    {form.type === "cycle" && form.cycle_type === "daily" && <div className="md:col-span-12"><label className="life-label">Active weekdays</label><div className="mt-2 flex flex-wrap gap-1">{weekdays.map((d,i)=><button type="button" key={d} onClick={()=>toggleWeekday(i)} className={`life-tab ${form.cycle_weekdays.includes(i)?"active":""}`}>{d}</button>)}</div><div className="mt-1 text-xs text-white/45">Only selected days require Done.</div></div>}
+    {form.type === "cycle" && form.cycle_type === "monthly" && <div className="md:col-span-12"><label className="life-label">Active month days</label><div className="mt-2 flex max-h-32 flex-wrap gap-1 overflow-auto">{Array.from({length:31},(_,i)=>i+1).map((d)=><button type="button" key={d} onClick={()=>toggleMonthDay(d)} className={`life-tab ${form.cycle_month_days.includes(d)?"active":""}`}>{d}</button>)}</div><div className="mt-1 text-xs text-white/45">Leave empty to require every day of month.</div></div>}
+    <div className="flex items-end gap-2 md:col-span-12"><button onClick={onSubmit} className="life-button"><Plus size={16} className="inline"/> {editing ? "Save" : "Create"}</button>{editing && <button onClick={onCancel} className="life-button secondary">Cancel</button>}</div>
   </div>;
 }
