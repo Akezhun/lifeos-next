@@ -1,6 +1,6 @@
 "use client";
 
-import { useEffect, useState } from "react";
+import { Suspense, useEffect, useState } from "react";
 import { useRouter, useSearchParams } from "next/navigation";
 import { createBrowserSupabase } from "@/lib/supabase/client";
 import Link from "next/link";
@@ -8,6 +8,14 @@ import Link from "next/link";
 type SignupMode = { mode: "public" | "invite" | "private"; allowPublicSignup: boolean; inviteMode: boolean; privateMode: boolean; ownerEmailConfigured: boolean };
 
 export default function AuthPage() {
+  return (
+    <Suspense fallback={<div className="grid min-h-screen place-items-center p-4"><div className="life-card w-full max-w-md p-7 shadow-glow">Загрузка входа...</div></div>}>
+      <AuthPageContent />
+    </Suspense>
+  );
+}
+
+function AuthPageContent() {
   const router = useRouter();
   const params = useSearchParams();
   const [email, setEmail] = useState("");

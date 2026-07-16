@@ -1,6 +1,6 @@
 "use client";
 
-import { useEffect, useMemo, useState } from "react";
+import { Suspense, useEffect, useMemo, useState } from "react";
 import { useSearchParams } from "next/navigation";
 import { AppShell } from "@/components/AppShell";
 import { AuthGate } from "@/components/AuthGate";
@@ -28,7 +28,7 @@ const tables = ["settings","user_profiles","trackers","tracker_events","tracker_
 export default function SettingsPage() {
   return (
     <AppShell title="Settings" subtitle="V14: финальная панель управления. Аккаунт, backup, offline/local-first, уведомления и Obsidian живут здесь.">
-      <AuthGate>{(user) => <Settings user={user} />}</AuthGate>
+      <AuthGate>{(user) => <Suspense fallback={<div className="life-card p-5">Загрузка настроек...</div>}><Settings user={user} /></Suspense>}</AuthGate>
     </AppShell>
   );
 }
